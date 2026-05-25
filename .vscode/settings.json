@@ -1,0 +1,4 @@
+{
+    "cmake.sourceDirectory": "/root/projects/rstrt/cpp_code",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/cpp_code/build/compile_commands.json"
+}
