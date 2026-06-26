@@ -5,3 +5,7 @@ version = 4
 [[package]]
 name = "rstrt"
 version = "0.1.0"
+
+[[package]]
+name = "rstrt-sys"
+version = "0.1.0"

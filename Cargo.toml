@@ -1,6 +1,12 @@
-[package]
-name = "rstrt"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = [
+    "rstrt",
+    "rstrt-sys",
+]
+resolver = "3"
 
-[dependencies]
+[workspace.package]
+version = "0.1.0"
+
+[workspace.dependencies]
+rstrt-sys = { path = "tensorrt-sys", version = "0.1.0" }
