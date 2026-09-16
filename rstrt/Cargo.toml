@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rstrt-sys = { path = "../rstrt-sys" }
+ndarray = "0.16"
+thiserror = "2"
+
+[dev-dependencies]

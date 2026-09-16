@@ -9,4 +9,4 @@ resolver = "3"
 version = "0.1.0"
 
 [workspace.dependencies]
-rstrt-sys = { path = "tensorrt-sys", version = "0.1.0" }
+rstrt-sys = { path = "rstrt-sys", version = "0.1.0" }

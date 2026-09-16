@@ -1,62 +1,59 @@
+#ifndef RSTRT_WRAPPER_H
+#define RSTRT_WRAPPER_H
 
+#include <cstddef>
 #include <cstdint>
 
-extern "C"
-{
-    enum TrtDataType : int32_t
-    {
-        //! 32-bit floating point format.
-        kFLOAT = 0,
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-        //! IEEE 16-bit floating-point format -- has a 5 bit exponent and 11 bit significand.
-        kHALF = 1,
+// Opaque handle.
+typedef struct TrtInfer TrtInfer;
 
-        //! Signed 8-bit integer representing a quantized floating-point value.
-        kINT8 = 2,
+// Tensor I/O mode (matches nvinfer1::TensorIOMode).
+enum TrtIoMode : int32_t {
+    kTrtIoInput = 1,
+    kTrtIoOutput = 2,
+};
 
-        //! Signed 32-bit integer format.
-        kINT32 = 3,
+// Error codes. 0 == success.
+#define TRT_OK                 0
+#define TRT_ERR_GENERIC        1
+#define TRT_ERR_NOT_FOUND      2
+#define TRT_ERR_CUDA           3
 
-        //! 8-bit boolean. 0 = false, 1 = true, other values undefined.
-        kBOOL = 4,
+// Last error message for this thread. Valid C string until next call.
+const char* trt_infer_last_error(void);
 
-        //! Unsigned 8-bit integer format.
-        //! Cannot be used to represent quantized floating-point values.
-        //! Use the IdentityLayer to convert kUINT8 network-level inputs to {kFLOAT, kHALF} prior
-        //! to use with other TensorRT layers, or to convert intermediate output
-        //! before kUINT8 network-level outputs from {kFLOAT, kHALF} to kUINT8.
-        //! kUINT8 conversions are only supported for {kFLOAT, kHALF}.
-        //! kUINT8 to {kFLOAT, kHALF} conversion will convert the integer values
-        //! to equivalent floating point values.
-        //! {kFLOAT, kHALF} to kUINT8 conversion will convert the floating point values
-        //! to integer values by truncating towards zero. This conversion has undefined behavior for
-        //! floating point values outside the range [0.0F, 256.0F) after truncation.
-        //! kUINT8 conversions are not supported for {kINT8, kINT32, kBOOL}.
-        kUINT8 = 5,
+// Load engine + create context + create stream. Returns NULL on failure (see last_error).
+TrtInfer* trt_infer_create(const char* engine_path);
+void trt_infer_free(TrtInfer* h);
 
-        //! Signed 8-bit floating point with
-        //! 1 sign bit, 4 exponent bits, 3 mantissa bits, and exponent-bias 7.
-        kFP8 = 6,
+// IO metadata. Index i in [0, nb_io).
+int32_t trt_infer_nb_io(TrtInfer* h);
+// Returns a pointer to a statically-lived C string (owned by the handle).
+const char* trt_infer_get_io_name(TrtInfer* h, int32_t i);
+int32_t trt_infer_get_io_mode(TrtInfer* h, int32_t i);   // TrtIoMode
+int32_t trt_infer_get_io_dtype(TrtInfer* h, int32_t i);  // TrtDataType (see wrapper enum values)
+int32_t trt_infer_get_io_ndims(TrtInfer* h, int32_t i);
+// Writes up to max_len dims; returns actual ndims.
+int32_t trt_infer_get_io_dims(TrtInfer* h, int32_t i, int64_t* out, int32_t max_len);
 
-        //! Brain float -- has an 8 bit exponent and 8 bit significand.
-        kBF16 = 7,
+// Allocate pinned (host) + device memory for the named tensor and bind device ptr to context.
+// Inputs also get their input shape set. Returns TRT_OK or error code.
+int32_t trt_infer_alloc(TrtInfer* h, const char* name, const int64_t* dims, int32_t ndims);
 
-        //! Signed 64-bit integer type.
-        kINT64 = 8,
+// Pinned host pointer (as integer) for the named tensor, or 0 if not allocated.
+uintptr_t trt_infer_pinned_ptr(TrtInfer* h, const char* name);
+// Byte size of the tensor's buffer, or 0 if not allocated.
+int64_t trt_infer_byte_size(TrtInfer* h, const char* name);
 
-        //! Signed 4-bit integer type.
-        kINT4 = 9,
+// Run inference: H2D all inputs -> enqueue -> D2H all outputs -> stream sync.
+int32_t trt_infer_infer(TrtInfer* h);
 
-        //! 4-bit floating point type
-        //! 1 bit sign, 2 bit exponent, 1 bit mantissa
-        kFP4 = 10,
-
-    };
-
-
-    struct TrtInfer
-    {
-        
-    };
-    
+#ifdef __cplusplus
 }
+#endif
+
+#endif  // RSTRT_WRAPPER_H
