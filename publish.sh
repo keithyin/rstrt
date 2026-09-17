@@ -12,7 +12,7 @@
 #   ./publish.sh --dry-run    # only validate, upload nothing
 #   ./publish.sh --yes        # skip the interactive confirmation
 #
-# Requires: CARGO_TOKEN in the environment (e.g. `export CARGO_TOKEN=...`).
+# Requires: `cargo login` to have been run (or a token in ~/.cargo/credentials).
 
 set -euo pipefail
 
@@ -35,16 +35,6 @@ done
 REG="--registry crates-io"
 
 # --- pre-flight ------------------------------------------------------------
-
-if [[ -z "${CARGO_TOKEN:-}" ]]; then
-  if (( DRY_RUN )); then
-    echo "note: CARGO_TOKEN not set (fine for --dry-run)"
-  else
-    echo "error: CARGO_TOKEN is not set. Export it first, e.g.:" >&2
-    echo "       export CARGO_TOKEN=\$(cargo login)   # or read it from https://crates.io/me" >&2
-    exit 1
-  fi
-fi
 
 echo "==> dry-run validating both crates (manifest + packaging)"
 cargo publish -p rstrt-sys $REG --dry-run
