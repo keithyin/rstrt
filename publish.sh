@@ -8,11 +8,15 @@
 # ordering and waits for the sync automatically.
 #
 # Usage:
-#   ./publish.sh              # dry-run both, then confirm before real publish
-#   ./publish.sh --dry-run    # only validate, upload nothing
+#   ./publish.sh              # validate rstrt-sys, publish, then validate + publish rstrt
+#   ./publish.sh --dry-run    # only validate rstrt-sys, upload nothing
 #   ./publish.sh --yes        # skip the interactive confirmation
 #
 # Requires: `cargo login` to have been run (or a token in ~/.cargo/credentials).
+#
+# Note: `rstrt` can only be packaged/validated once `rstrt-sys` exists in the
+# registry (cargo resolves its path dependency against the registry during
+# publish). So `rstrt` is validated after `rstrt-sys` has synced.
 
 set -euo pipefail
 
@@ -36,12 +40,14 @@ REG="--registry crates-io"
 
 # --- pre-flight ------------------------------------------------------------
 
-echo "==> dry-run validating both crates (manifest + packaging)"
+# Only rstrt-sys can be validated up front; rstrt needs it live in the registry
+# first (see note in the header).
+echo "==> validating rstrt-sys (manifest + packaging)"
 cargo publish -p rstrt-sys $REG --dry-run
-cargo publish -p rstrt     $REG --dry-run
 
 if (( DRY_RUN )); then
   echo "==> dry-run complete, nothing was uploaded."
+  echo "    (rstrt not validated: it requires rstrt-sys in the registry.)"
   exit 0
 fi
 
@@ -69,6 +75,10 @@ for i in $(seq 1 40); do
   fi
   sleep 15
 done
+
+# Now that rstrt-sys is resolvable from the registry, validate then publish rstrt.
+echo "==> validating rstrt (manifest + packaging)"
+cargo publish -p rstrt $REG --dry-run
 
 echo "==> publishing rstrt"
 cargo publish -p rstrt $REG
