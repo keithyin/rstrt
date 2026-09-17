@@ -8,9 +8,10 @@ exclude = [
     "2025Q1-stage2-selfattn-2o-onnx",
     "cpp_code"
 ]
+repository = "https://github.com/keithyin/rstrt"
 
 [dependencies]
-rstrt-sys = { path = "../rstrt-sys" }
+rstrt-sys = { path = "../rstrt-sys", version = "0.1.0" }
 ndarray = "0.16"
 thiserror = "2"
 

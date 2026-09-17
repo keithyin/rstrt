@@ -3,6 +3,9 @@ name = "rstrt-sys"
 version = "0.1.0"
 edition = "2024"
 build = "build.rs"
+repository = "https://github.com/keithyin/rstrt"
+description = "rust tensorrt"
+license = "MIT"
 
 [dependencies]
 libc = "0.2"
