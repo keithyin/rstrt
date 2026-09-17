@@ -2,6 +2,12 @@
 name = "rstrt"
 version = "0.1.0"
 edition = "2024"
+description = "rust tensorrt"
+license = "MIT"
+exclude = [
+    "2025Q1-stage2-selfattn-2o-onnx",
+    "cpp_code"
+]
 
 [dependencies]
 rstrt-sys = { path = "../rstrt-sys" }
