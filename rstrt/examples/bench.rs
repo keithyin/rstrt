@@ -16,30 +16,27 @@ fn plan_path() -> PathBuf {
     if let Ok(p) = std::env::var("RSTRT_PLAN") {
         return PathBuf::from(p);
     }
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../2025Q1-stage2-selfattn-2o-onnx/model.fp16.plan")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../2025Q1-stage2-selfattn-2o-onnx/model.fp16.plan")
 }
 
 fn run_one(plan: &Path) -> f32 {
-    let mut infer = rstrt::TrtInfer::new(plan.to_str().unwrap()).expect("create");
+    let mut infer = rstrt::TrtInfer::new(plan).expect("create");
     infer
         .allocate_memory_for("feature", &[B as i64, T as i64, F as i64])
         .unwrap();
-    infer
-        .allocate_memory_for("length", &[B as i64])
-        .unwrap();
+    infer.allocate_memory_for("length", &[B as i64]).unwrap();
     infer
         .allocate_memory_for("probs", &[(B * T) as i64, 2])
         .unwrap();
 
     {
-        let mut fv = infer.get_pinned_memory_f32_mut("feature").unwrap();
+        let mut fv = infer.pinned_view_mut::<f32>("feature").unwrap();
         for (i, slot) in fv.iter_mut().enumerate() {
             *slot = 0.001f32 * (((i * 31) % 1000) as f32) - 0.5f32;
         }
     }
     {
-        let mut lv = infer.get_pinned_memory_i64_mut("length").unwrap();
+        let mut lv = infer.pinned_view_mut::<i64>("length").unwrap();
         lv.fill(200);
     }
 
@@ -50,7 +47,7 @@ fn run_one(plan: &Path) -> f32 {
     let mut first = 0.0f32;
     for _ in 0..ITERS {
         infer.infer().unwrap();
-        let p = infer.get_pinned_memory_f32("probs").unwrap();
+        let p = infer.pinned_view::<f32>("probs").unwrap();
         first = p[1];
     }
     let dt = t0.elapsed();
@@ -62,10 +59,16 @@ fn run_one(plan: &Path) -> f32 {
 }
 
 fn main() {
-    let n: usize = std::env::args()
-        .nth(1)
-        .map(|s| s.parse().unwrap_or(1))
-        .unwrap_or(2);
+    let n: usize = match std::env::args().nth(1) {
+        Some(s) => match s.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!("invalid thread count: {s}");
+                std::process::exit(2);
+            }
+        },
+        None => 2,
+    };
 
     let plan = plan_path();
     if !plan.exists() {

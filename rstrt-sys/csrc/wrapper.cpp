@@ -28,10 +28,9 @@ public:
 // Thread-local error message, reset by each fallible call.
 thread_local std::string g_err;
 
-const char* err(const std::string& msg)
+void err(const std::string& msg)
 {
     g_err = msg;
-    return g_err.c_str();
 }
 
 struct TensorBuf
@@ -87,10 +86,23 @@ void* read_file(const char* path, size_t& out_size)
             return nullptr;
         }
         std::fseek(f, 0, SEEK_END);
-        size_t size = static_cast<size_t>(std::ftell(f));
+        long tell = std::ftell(f);
+        if (tell < 0)
+        {
+            std::fclose(f);
+            err("failed to determine engine file size");
+            return nullptr;
+        }
+        size_t size = static_cast<size_t>(tell);
+        if (size == 0)
+        {
+            std::fclose(f);
+            err("engine file is empty: " + std::string(path));
+            return nullptr;
+        }
         std::fseek(f, 0, SEEK_SET);
         data.resize(size);
-        if (size && std::fread(data.data(), 1, size, f) != size)
+        if (std::fread(data.data(), 1, size, f) != size)
         {
             std::fclose(f);
             err("failed to read engine file");
@@ -100,6 +112,11 @@ void* read_file(const char* path, size_t& out_size)
         out_size = size;
     }
     void* buf = std::malloc(out_size);
+    if (!buf)
+    {
+        err("out of memory reading engine file");
+        return nullptr;
+    }
     std::memcpy(buf, data.data(), out_size);
     return buf;
 }
@@ -238,11 +255,12 @@ void trt_infer_free(TrtInfer* h)
         if (tb.device)
             cudaFree(tb.device);
     }
-    if (h->stream)
-        cudaStreamDestroy(h->stream);
+    // Destroy consumers of the stream before the stream itself.
     delete h->context;
     delete h->engine;
     delete h->runtime;
+    if (h->stream)
+        cudaStreamDestroy(h->stream);
     delete h;
 }
 
@@ -295,7 +313,10 @@ int32_t trt_infer_get_io_dims(TrtInfer* h, int32_t i, int64_t* out, int32_t max_
 int32_t trt_infer_alloc(TrtInfer* h, const char* name, const int64_t* dims, int32_t ndims)
 {
     if (!h || !name || !dims || ndims <= 0)
+    {
+        err("trt_infer_alloc: invalid arguments (null handle/name/dims or ndims <= 0)");
         return TRT_ERR_GENERIC;
+    }
 
     auto it = h->tensors.find(name);
     if (it == h->tensors.end())
@@ -397,14 +418,14 @@ int32_t trt_infer_alloc(TrtInfer* h, const char* name, const int64_t* dims, int3
     return TRT_OK;
 }
 
-uintptr_t trt_infer_pinned_ptr(TrtInfer* h, const char* name)
+void* trt_infer_pinned_ptr(TrtInfer* h, const char* name)
 {
     if (!h || !name)
-        return 0;
+        return nullptr;
     auto it = h->tensors.find(name);
     if (it == h->tensors.end())
-        return 0;
-    return reinterpret_cast<uintptr_t>(it->second.pinned);
+        return nullptr;
+    return it->second.pinned;
 }
 
 int64_t trt_infer_byte_size(TrtInfer* h, const char* name)

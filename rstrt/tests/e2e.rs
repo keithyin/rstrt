@@ -12,7 +12,9 @@ const F: usize = 61;
 /// Same deterministic input as cpp_code/ref_main.cpp.
 fn ref_feature() -> Vec<f32> {
     let n = B * T * F;
-    (0..n).map(|i| 0.001f32 * (((i * 31) % 1000) as f32) - 0.5f32).collect()
+    (0..n)
+        .map(|i| 0.001f32 * (((i * 31) % 1000) as f32) - 0.5f32)
+        .collect()
 }
 
 #[test]
@@ -22,30 +24,34 @@ fn matches_cpp_baseline() {
         return;
     };
 
-    let mut infer = rstrt::TrtInfer::new(plan.to_str().unwrap()).expect("create");
+    let mut infer = rstrt::TrtInfer::new(&plan).expect("create");
 
     // Allocate all I/O.
-    infer.allocate_memory_for("feature", &[B as i64, T as i64, F as i64]).unwrap();
+    infer
+        .allocate_memory_for("feature", &[B as i64, T as i64, F as i64])
+        .unwrap();
     infer.allocate_memory_for("length", &[B as i64]).unwrap();
-    infer.allocate_memory_for("probs", &[(B * T) as i64, 2]).unwrap();
+    infer
+        .allocate_memory_for("probs", &[(B * T) as i64, 2])
+        .unwrap();
 
-    // Write inputs (each borrow of `infer` must end before the next).
+    // Write inputs (each mutable borrow of `infer` must end before the next).
     {
         let feat = ref_feature();
-        let mut fv = infer.get_pinned_memory_f32_mut("feature").unwrap();
+        let mut fv = infer.pinned_view_mut::<f32>("feature").unwrap();
         for (slot, &v) in fv.iter_mut().zip(feat.iter()) {
             *slot = v;
         }
     }
     {
-        let mut lv = infer.get_pinned_memory_i64_mut("length").unwrap();
+        let mut lv = infer.pinned_view_mut::<i64>("length").unwrap();
         lv.fill(200);
     }
 
     infer.infer().unwrap();
 
     // Read output (read-only view).
-    let p = infer.get_pinned_memory_f32("probs").unwrap();
+    let p = infer.pinned_view::<f32>("probs").unwrap();
     assert_eq!(p.len(), 51_200);
 
     let close = |a: f32, b: f32| (a - b).abs() < 1e-5;

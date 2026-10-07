@@ -44,8 +44,9 @@ int32_t trt_infer_get_io_dims(TrtInfer* h, int32_t i, int64_t* out, int32_t max_
 // Inputs also get their input shape set. Returns TRT_OK or error code.
 int32_t trt_infer_alloc(TrtInfer* h, const char* name, const int64_t* dims, int32_t ndims);
 
-// Pinned host pointer (as integer) for the named tensor, or 0 if not allocated.
-uintptr_t trt_infer_pinned_ptr(TrtInfer* h, const char* name);
+// Pinned host pointer for the named tensor, or NULL if not allocated.
+// Valid until trt_infer_free.
+void* trt_infer_pinned_ptr(TrtInfer* h, const char* name);
 // Byte size of the tensor's buffer, or 0 if not allocated.
 int64_t trt_infer_byte_size(TrtInfer* h, const char* name);
 
