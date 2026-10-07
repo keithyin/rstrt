@@ -1,14 +1,12 @@
 [package]
 name = "rstrt-sys"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 build = "build.rs"
 repository = "https://github.com/keithyin/rstrt"
-description = "rust tensorrt"
+description = "TensorRT FFI bindings for the rstrt crate"
 license = "MIT"
-
-[dependencies]
-libc = "0.2"
+links = "rstrt_wrappers"
 
 [build-dependencies]
 cc = "1"

@@ -3,17 +3,25 @@
 //!
 //! Run: `cargo run -p rstrt --example bench [N]`
 
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Instant;
 
-const PLAN: &str = "/root/projects/rstrt/2025Q1-stage2-selfattn-2o-onnx/model.fp16.plan";
 const B: usize = 128;
 const T: usize = 200;
 const F: usize = 61;
 const ITERS: usize = 200;
 
-fn run_one() -> f32 {
-    let mut infer = rstrt::TrtInfer::new(PLAN).expect("create");
+fn plan_path() -> PathBuf {
+    if let Ok(p) = std::env::var("RSTRT_PLAN") {
+        return PathBuf::from(p);
+    }
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../2025Q1-stage2-selfattn-2o-onnx/model.fp16.plan")
+}
+
+fn run_one(plan: &Path) -> f32 {
+    let mut infer = rstrt::TrtInfer::new(plan.to_str().unwrap()).expect("create");
     infer
         .allocate_memory_for("feature", &[B as i64, T as i64, F as i64])
         .unwrap();
@@ -59,12 +67,22 @@ fn main() {
         .map(|s| s.parse().unwrap_or(1))
         .unwrap_or(2);
 
+    let plan = plan_path();
+    if !plan.exists() {
+        eprintln!(
+            "engine not found at {}; set RSTRT_PLAN to the .plan file",
+            plan.display()
+        );
+        std::process::exit(1);
+    }
+
     let t0 = Instant::now();
     let handles: Vec<_> = (0..n)
         .map(|i| {
+            let plan = plan.clone();
             thread::Builder::new()
                 .name(format!("infer-{i}"))
-                .spawn(run_one)
+                .spawn(move || run_one(&plan))
                 .expect("spawn")
         })
         .collect();

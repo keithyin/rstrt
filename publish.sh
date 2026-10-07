@@ -41,9 +41,9 @@ done
 # (dry-run + publish both need it). Remove --registry if you don't use a mirror.
 REG="--registry crates-io"
 
-# Read a crate's declared version from its manifest (first `version = "..."`).
+# Read a crate's version via cargo (robust to `version.workspace = true`).
 crate_version() {
-  sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$1/Cargo.toml" | head -1
+  cargo pkgid -p "$1" 2>/dev/null | sed 's/.*#//'
 }
 
 # Query crates.io directly (bypasses the local registry mirror that blocks

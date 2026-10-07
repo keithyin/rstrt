@@ -3,6 +3,7 @@
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -61,6 +62,19 @@ struct TrtInfer
 };
 
 namespace {
+
+// Renders dims as "[a,b,c]" for error messages.
+std::string dims_str(const std::vector<int64_t>& d)
+{
+    std::string s = "[";
+    for (size_t i = 0; i < d.size(); ++i)
+    {
+        if (i)
+            s += ",";
+        s += std::to_string(d[i]);
+    }
+    return s + "]";
+}
 
 void* read_file(const char* path, size_t& out_size)
 {
@@ -242,7 +256,7 @@ int32_t trt_infer_nb_io(TrtInfer* h)
 const char* trt_infer_get_io_name(TrtInfer* h, int32_t i)
 {
     if (!h || i < 0 || i >= static_cast<int32_t>(h->io_names.size()))
-        return "";
+        return nullptr;
     return h->io_names[i].c_str();
 }
 
@@ -291,7 +305,46 @@ int32_t trt_infer_alloc(TrtInfer* h, const char* name, const int64_t* dims, int3
     }
     TensorBuf& tb = it->second;
     if (tb.device)
-        return TRT_OK;  // already allocated
+    {
+        err(std::string("tensor '") + name + "' already allocated");
+        return TRT_ERR_GENERIC;
+    }
+
+    // Buffers are flat: what matters for safety is the element count. The
+    // engine reads/writes exactly engine_numel elements, so a requested shape
+    // with a different element count would over/under-run the allocation.
+    // Inputs additionally get their exact shape validated by setInputShape
+    // below. Flattened shapes with an equal element count stay allowed
+    // (e.g. [B,T,2] allocated as [B*T,2]).
+    auto is_dynamic = [](const std::vector<int64_t>& d) {
+        return std::any_of(d.begin(), d.end(), [](int64_t v) { return v < 0; });
+    };
+    auto numel64 = [](const std::vector<int64_t>& d) -> int64_t {
+        int64_t n = 1;
+        for (int64_t v : d)
+            n *= (v < 0 ? 1 : v);
+        return n;
+    };
+    for (int32_t j = 0; j < ndims; ++j)
+    {
+        if (dims[j] < 0)
+        {
+            err(std::string("dim ") + std::to_string(j) + " of '" + name
+                    + "' must be a positive extent, got " + std::to_string(dims[j]));
+            return TRT_ERR_GENERIC;
+        }
+    }
+    if (!is_dynamic(tb.dims))
+    {
+        std::vector<int64_t> req(dims, dims + ndims);
+        if (numel64(tb.dims) != numel64(req))
+        {
+            err(std::string("shape mismatch for '") + name + "': engine " + dims_str(tb.dims) + " ("
+                + std::to_string(numel64(tb.dims)) + " elements) vs requested " + dims_str(req) + " ("
+                + std::to_string(numel64(req)) + " elements)");
+            return TRT_ERR_GENERIC;
+        }
+    }
 
     size_t numel = 1;
     for (int32_t j = 0; j < ndims; ++j)

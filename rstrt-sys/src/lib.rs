@@ -9,17 +9,16 @@
 use std::os::raw::{c_char, c_int};
 
 pub const TRT_OK: c_int = 0;
+pub const TRT_ERR_GENERIC: c_int = 1;
+pub const TRT_ERR_NOT_FOUND: c_int = 2;
+pub const TRT_ERR_CUDA: c_int = 3;
+
+/// `nvinfer1::TensorIOMode` values as passed over the C ABI.
+pub const TRT_IO_INPUT: i32 = 1;
+pub const TRT_IO_OUTPUT: i32 = 2;
 
 /// Opaque handle returned by [`trt_infer_create`].
 pub type TrtInfer = std::ffi::c_void;
-
-/// I/O direction of a tensor, matching the C `TrtIoMode` values.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IoMode {
-    Input = 1,
-    Output = 2,
-}
 
 unsafe extern "C" {
     /// Last error message for the current thread; empty string when none.
@@ -31,8 +30,11 @@ unsafe extern "C" {
     pub fn trt_infer_free(handle: *mut TrtInfer);
 
     pub fn trt_infer_nb_io(handle: *mut TrtInfer) -> i32;
+    /// Tensor name at index `i`, or NULL for a bad index.
     pub fn trt_infer_get_io_name(handle: *mut TrtInfer, i: i32) -> *const c_char;
+    /// `TRT_IO_INPUT` / `TRT_IO_OUTPUT`, or -1 for a bad index.
     pub fn trt_infer_get_io_mode(handle: *mut TrtInfer, i: i32) -> i32;
+    /// `nvinfer1::DataType` as int, or -1 for a bad index.
     pub fn trt_infer_get_io_dtype(handle: *mut TrtInfer, i: i32) -> i32;
     pub fn trt_infer_get_io_ndims(handle: *mut TrtInfer, i: i32) -> i32;
     pub fn trt_infer_get_io_dims(handle: *mut TrtInfer, i: i32, out: *mut i64, max_len: i32) -> i32;

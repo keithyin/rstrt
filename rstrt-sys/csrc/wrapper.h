@@ -32,7 +32,7 @@ void trt_infer_free(TrtInfer* h);
 
 // IO metadata. Index i in [0, nb_io).
 int32_t trt_infer_nb_io(TrtInfer* h);
-// Returns a pointer to a statically-lived C string (owned by the handle).
+// Returns a pointer to a statically-lived C string (owned by the handle), or NULL for a bad index.
 const char* trt_infer_get_io_name(TrtInfer* h, int32_t i);
 int32_t trt_infer_get_io_mode(TrtInfer* h, int32_t i);   // TrtIoMode
 int32_t trt_infer_get_io_dtype(TrtInfer* h, int32_t i);  // TrtDataType (see wrapper enum values)
