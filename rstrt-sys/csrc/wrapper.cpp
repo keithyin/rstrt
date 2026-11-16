@@ -62,6 +62,20 @@ struct TrtInfer
 
 namespace {
 
+// Frees everything owned by `h` (mirrors trt_infer_free minus the per-tensor
+// buffer frees). Used by the failure paths in trt_infer_create so that a
+// partially-built handle does not leak the runtime/engine/stream.
+void destroy(TrtInfer* h)
+{
+    // Destroy consumers of the stream before the stream itself.
+    delete h->context;
+    delete h->engine;
+    delete h->runtime;
+    if (h->stream)
+        cudaStreamDestroy(h->stream);
+    delete h;
+}
+
 // Renders dims as "[a,b,c]" for error messages.
 std::string dims_str(const std::vector<int64_t>& d)
 {
@@ -73,6 +87,27 @@ std::string dims_str(const std::vector<int64_t>& d)
         s += std::to_string(d[i]);
     }
     return s + "]";
+}
+
+// Element count of a shape; negative dims (dynamic) count as 1. Sets
+// `overflow` instead of overflowing.
+size_t shape_numel(const std::vector<int64_t>& dims, bool& overflow)
+{
+    overflow = false;
+    size_t n = 1;
+    for (int64_t v : dims)
+    {
+        if (v < 0)
+            continue;  // dynamic dim: unknown extent, contributes nothing here
+        const size_t d = static_cast<size_t>(v);
+        if (d != 0 && n > SIZE_MAX / d)
+        {
+            overflow = true;
+            return n;
+        }
+        n *= d;
+    }
+    return n;
 }
 
 void* read_file(const char* path, size_t& out_size)
@@ -186,7 +221,7 @@ TrtInfer* trt_infer_create(const char* engine_path)
     h->runtime = make_runtime();
     if (!h->runtime)
     {
-        delete h;
+        destroy(h);
         std::free(blob);
         return nullptr;
     }
@@ -196,7 +231,7 @@ TrtInfer* trt_infer_create(const char* engine_path)
     if (!h->engine)
     {
         err("failed to deserialize engine");
-        delete h;
+        destroy(h);
         return nullptr;
     }
 
@@ -204,21 +239,21 @@ TrtInfer* trt_infer_create(const char* engine_path)
     if (!h->context)
     {
         err("failed to create execution context");
-        delete h;
+        destroy(h);
         return nullptr;
     }
 
     if (cudaStreamCreate(&h->stream) != cudaSuccess)
     {
         err(std::string("cudaStreamCreate failed: ") + cudaGetErrorString(cudaGetLastError()));
-        delete h;
+        destroy(h);
         return nullptr;
     }
 
     if (!h->context->setOptimizationProfileAsync(0, h->stream))
     {
         err("failed to set optimization profile");
-        delete h;
+        destroy(h);
         return nullptr;
     }
 
@@ -255,13 +290,7 @@ void trt_infer_free(TrtInfer* h)
         if (tb.device)
             cudaFree(tb.device);
     }
-    // Destroy consumers of the stream before the stream itself.
-    delete h->context;
-    delete h->engine;
-    delete h->runtime;
-    if (h->stream)
-        cudaStreamDestroy(h->stream);
-    delete h;
+    destroy(h);
 }
 
 int32_t trt_infer_nb_io(TrtInfer* h)
@@ -317,6 +346,15 @@ int32_t trt_infer_alloc(TrtInfer* h, const char* name, const int64_t* dims, int3
         err("trt_infer_alloc: invalid arguments (null handle/name/dims or ndims <= 0)");
         return TRT_ERR_GENERIC;
     }
+    if (ndims > nvinfer1::Dims::MAX_DIMS)
+    {
+        // `setInputShape` receives a stack-allocated nvinfer1::Dims whose
+        // d[] array holds exactly MAX_DIMS entries; a larger rank would
+        // write past it.
+        err(std::string("trt_infer_alloc: '") + name + "' requests " + std::to_string(ndims)
+                + " dims, but TensorRT supports at most " + std::to_string(nvinfer1::Dims::MAX_DIMS));
+        return TRT_ERR_GENERIC;
+    }
 
     auto it = h->tensors.find(name);
     if (it == h->tensors.end())
@@ -335,16 +373,11 @@ int32_t trt_infer_alloc(TrtInfer* h, const char* name, const int64_t* dims, int3
     // engine reads/writes exactly engine_numel elements, so a requested shape
     // with a different element count would over/under-run the allocation.
     // Inputs additionally get their exact shape validated by setInputShape
-    // below. Flattened shapes with an equal element count stay allowed
-    // (e.g. [B,T,2] allocated as [B*T,2]).
+    // below, and outputs are re-checked against the engine-resolved shape at
+    // infer time (trt_infer_infer). Flattened shapes with an equal element
+    // count stay allowed (e.g. [B,T,2] allocated as [B*T,2]).
     auto is_dynamic = [](const std::vector<int64_t>& d) {
         return std::any_of(d.begin(), d.end(), [](int64_t v) { return v < 0; });
-    };
-    auto numel64 = [](const std::vector<int64_t>& d) -> int64_t {
-        int64_t n = 1;
-        for (int64_t v : d)
-            n *= (v < 0 ? 1 : v);
-        return n;
     };
     for (int32_t j = 0; j < ndims; ++j)
     {
@@ -355,22 +388,56 @@ int32_t trt_infer_alloc(TrtInfer* h, const char* name, const int64_t* dims, int3
             return TRT_ERR_GENERIC;
         }
     }
+    const std::vector<int64_t> req(dims, dims + ndims);
+    bool req_ovf = false;
+    const size_t req_numel = shape_numel(req, req_ovf);
+    if (req_ovf)
+    {
+        err(std::string("element count overflows for '") + name + "': shape " + dims_str(req));
+        return TRT_ERR_GENERIC;
+    }
+    if (req_numel == 0)
+    {
+        err(std::string("tensor '") + name + "' has a zero extent in shape " + dims_str(req)
+                + "; cannot allocate an empty buffer");
+        return TRT_ERR_GENERIC;
+    }
     if (!is_dynamic(tb.dims))
     {
-        std::vector<int64_t> req(dims, dims + ndims);
-        if (numel64(tb.dims) != numel64(req))
+        bool eng_ovf = false;
+        const size_t eng_numel = shape_numel(tb.dims, eng_ovf);
+        if (eng_ovf || eng_numel != req_numel)
         {
             err(std::string("shape mismatch for '") + name + "': engine " + dims_str(tb.dims) + " ("
-                + std::to_string(numel64(tb.dims)) + " elements) vs requested " + dims_str(req) + " ("
-                + std::to_string(numel64(req)) + " elements)");
+                + (eng_ovf ? std::string("overflow") : std::to_string(eng_numel)) + " elements) vs requested "
+                + dims_str(req) + " (" + std::to_string(req_numel) + " elements)");
             return TRT_ERR_GENERIC;
         }
     }
 
-    size_t numel = 1;
-    for (int32_t j = 0; j < ndims; ++j)
-        numel *= static_cast<size_t>(dims[j] < 0 ? 1 : dims[j]);
-    size_t nbytes = numel * elem_size(tb.dtype);
+    // A wrapped-around byte size would allocate a tiny buffer that the engine
+    // then writes past, so reject the overflow explicitly.
+    const size_t esz = elem_size(tb.dtype);
+    if (req_numel > SIZE_MAX / esz)
+    {
+        err(std::string("byte size overflows for '") + name + "': shape " + dims_str(req));
+        return TRT_ERR_GENERIC;
+    }
+    const size_t nbytes = req_numel * esz;
+
+    // Snapshot the pre-alloc metadata: the fields are assigned below before
+    // setTensorAddress/setInputShape can still fail, and a failed allocation
+    // must leave the tensor in its pre-alloc state.
+    const std::vector<int64_t> engine_dims = tb.dims;
+    const int32_t engine_ndims = tb.ndims;
+    auto release = [&]() {
+        cudaFree(tb.device);
+        cudaFreeHost(tb.pinned);
+        tb.device = tb.pinned = nullptr;
+        tb.bytes = 0;
+        tb.ndims = engine_ndims;
+        tb.dims = engine_dims;
+    };
 
     if (cudaHostAlloc(&tb.pinned, nbytes, cudaHostAllocDefault) != cudaSuccess)
     {
@@ -387,14 +454,12 @@ int32_t trt_infer_alloc(TrtInfer* h, const char* name, const int64_t* dims, int3
 
     tb.bytes = static_cast<int64_t>(nbytes);
     tb.ndims = ndims;
-    tb.dims.assign(dims, dims + ndims);
+    tb.dims = req;
 
     if (!h->context->setTensorAddress(name, tb.device))
     {
         err(std::string("setTensorAddress failed for ") + name);
-        cudaFree(tb.device);
-        cudaFreeHost(tb.pinned);
-        tb.device = tb.pinned = nullptr;
+        release();
         return TRT_ERR_GENERIC;
     }
 
@@ -407,9 +472,7 @@ int32_t trt_infer_alloc(TrtInfer* h, const char* name, const int64_t* dims, int3
         if (!h->context->setInputShape(name, d))
         {
             err(std::string("setInputShape failed for ") + name);
-            cudaFree(tb.device);
-            cudaFreeHost(tb.pinned);
-            tb.device = tb.pinned = nullptr;
+            release();
             return TRT_ERR_GENERIC;
         }
     }
@@ -458,6 +521,49 @@ int32_t trt_infer_infer(TrtInfer* h)
                 err(std::string("H2D failed for ") + name + ": " + cudaGetErrorString(cudaGetLastError()));
                 return TRT_ERR_CUDA;
             }
+        }
+    }
+
+    // The engine writes the resolved output shape, so validate every output
+    // buffer against it before enqueueing: an under-sized allocation (only
+    // possible for dynamic engines, where trt_infer_alloc cannot know the
+    // output size up front) would otherwise let the engine write past the
+    // buffer. -1 dims mean the shape is not resolved yet; enqueueV3 reports
+    // that itself.
+    for (const auto& name : h->io_names)
+    {
+        const TensorBuf& tb = h->tensors.at(name);
+        if (!tb.device || tb.mode != kTrtIoOutput)
+            continue;
+        const nvinfer1::Dims d = h->context->getTensorShape(name.c_str());
+        bool resolved = true;
+        bool overflow = false;
+        size_t numel = 1;
+        for (int j = 0; j < d.nbDims; ++j)
+        {
+            const int64_t v = d.d[j];
+            if (v < 0)
+            {
+                resolved = false;
+                break;
+            }
+            const size_t ext = static_cast<size_t>(v);
+            if (ext != 0 && numel > SIZE_MAX / ext)
+            {
+                overflow = true;
+                break;
+            }
+            numel *= ext;
+        }
+        if (!resolved)
+            continue;
+        const size_t esz = elem_size(tb.dtype);
+        if (overflow || numel > static_cast<size_t>(tb.bytes) / esz)
+        {
+            err(std::string("output '") + name + "' resolves to " + std::to_string(numel)
+                    + " elements but its buffer only holds "
+                    + std::to_string(static_cast<size_t>(tb.bytes) / esz) + "; allocate it with a larger shape");
+            return TRT_ERR_GENERIC;
         }
     }
 

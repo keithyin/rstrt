@@ -3,17 +3,17 @@
 A safe, ergonomic Rust wrapper over NVIDIA TensorRT. A single `TrtInfer` owns
 one TensorRT execution context, one CUDA stream, and a pinned/device buffer per
 I/O tensor. It is `Send` but not `Sync`: the C handle is not thread-safe, so
-never share it across threads (wrapping it in a `Mutex` does not make
-concurrent use sound). Create it on one thread, hand it off, and drive it from
-a single owner thread. With one object per thread you get multi-stream
-inference for free.
+never share it across threads. Wrapping it in a `Mutex` would make shared use
+sound but serializes every call — instead, create it on one thread, hand it
+off, and drive it from a single owner thread. With one object per thread you
+get multi-stream inference for free.
 
-The caller is responsible for static shapes — the engine is built for fixed
-shapes and the buffer sizes derive from them. `allocate_memory_for` validates
-the requested shape against the engine (element count must match), views are
-checked against the tensor's dtype, and allocating a tensor twice or running
-`infer()` with unallocated tensors are errors — misuse fails loudly instead of
-reinterpreting memory.
+`allocate_memory_for` validates the requested shape against the engine —
+static engines require the element count to match, and for dynamic engines
+every `infer()` re-checks each output buffer against the engine-resolved
+output shape. Views are checked against the tensor's dtype, and allocating a
+tensor twice, running `infer()` with unallocated tensors, or under-sizing an
+output are errors — misuse fails loudly instead of reinterpreting memory.
 
 ## Workspace layout
 
@@ -99,7 +99,8 @@ Notes:
 - `infer()` is synchronous: it blocks until the outputs are back in host
   memory, and errors early if any I/O tensor has not been allocated yet.
 - Query engine metadata with `tensors()` / `io(i)` for tensor names, modes,
-  dtypes, and shapes (snapshotted once at load time).
+  dtypes, and shapes (the shape is the engine-declared one until
+  `allocate_memory_for` overrides it).
 - Errors are `rstrt::Error`: `NotFound` (unknown tensor name), `Cuda`
   (CUDA API failure), or `Generic` (everything else, including shape/dtype
   validation failures).

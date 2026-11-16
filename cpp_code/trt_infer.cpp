@@ -21,7 +21,10 @@ TRTInfer::TRTInfer(const std::string &engine_file)
 {
     load_engine(engine_file);
 
-    cudaStreamCreate(&stream_);
+    if (cudaStreamCreate(&stream_) != cudaSuccess)
+    {
+        throw std::runtime_error("Failed to create CUDA stream!");
+    }
 
     if (!context_->setOptimizationProfileAsync(0, stream_))
     {
@@ -100,8 +103,11 @@ TRTInfer::TRTInfer(const std::string &engine_file)
     feat_bytes_ = B * T * F * sizeof(float);
     lengths_bytes_ = B * sizeof(int64_t);
 
-    cudaMalloc(&feat_device_, feat_bytes_);
-    cudaMalloc(&lengths_device_, lengths_bytes_);
+    if (cudaMalloc(&feat_device_, feat_bytes_) != cudaSuccess ||
+        cudaMalloc(&lengths_device_, lengths_bytes_) != cudaSuccess)
+    {
+        throw std::runtime_error("Failed to allocate input buffers!");
+    }
 
     // ⭐ 关键：初始化 lengths（shape tensor 必须有值）
     std::vector<int64_t> init_lengths(B, 200);
@@ -109,7 +115,10 @@ TRTInfer::TRTInfer(const std::string &engine_file)
 
     // 先给一个临时 output
     output_bytes_ = 1024 * sizeof(float);
-    cudaMalloc(&output_device_, output_bytes_);
+    if (cudaMalloc(&output_device_, output_bytes_) != cudaSuccess)
+    {
+        throw std::runtime_error("Failed to allocate output buffer!");
+    }
 
     // ⭐ 先绑定 tensor
     context_->setTensorAddress(feat_name_.c_str(), feat_device_);
@@ -204,7 +213,17 @@ void TRTInfer::load_engine(const std::string &engine_file)
     file.read(buffer.data(), size);
 
     runtime_ = createInferRuntime(gLogger);
+    if (!runtime_)
+    {
+        throw std::runtime_error("Failed to create InferRuntime!");
+    }
+
     engine_ = runtime_->deserializeCudaEngine(buffer.data(), size);
+    if (!engine_)
+    {
+        throw std::runtime_error("Failed to deserialize CUDA engine!");
+    }
+
     context_ = engine_->createExecutionContext();
 
     if (!context_)
@@ -217,18 +236,44 @@ void TRTInfer::infer(const std::vector<float> &feat,
                      const std::vector<int64_t> &lengths,
                      std::vector<float> &output)
 {
+    // The copies below use fixed sizes derived from the engine's shapes; a
+    // smaller caller-side vector would be read/written out of bounds.
+    if (feat.size() < feat_bytes_ / sizeof(float))
+    {
+        throw std::runtime_error("feat size smaller than the engine input!");
+    }
+    if (lengths.size() < lengths_bytes_ / sizeof(int64_t))
+    {
+        throw std::runtime_error("lengths size smaller than the engine input!");
+    }
+    if (output.size() < output_numel_)
+    {
+        throw std::runtime_error("output smaller than the engine output!");
+    }
 
-    cudaMemcpyAsync(feat_device_, feat.data(), feat_bytes_,
-                    cudaMemcpyHostToDevice, stream_);
+    if (cudaMemcpyAsync(feat_device_, feat.data(), feat_bytes_,
+                        cudaMemcpyHostToDevice, stream_) != cudaSuccess)
+    {
+        throw std::runtime_error("H2D feat copy failed!");
+    }
 
     // ⭐ shape tensor 每次也要更新
-    cudaMemcpyAsync(lengths_device_, lengths.data(), lengths_bytes_,
-                    cudaMemcpyHostToDevice, stream_);
+    if (cudaMemcpyAsync(lengths_device_, lengths.data(), lengths_bytes_,
+                        cudaMemcpyHostToDevice, stream_) != cudaSuccess)
+    {
+        throw std::runtime_error("H2D lengths copy failed!");
+    }
 
     context_->enqueueV3(stream_);
 
-    cudaMemcpyAsync(output.data(), output_device_, output_bytes_,
-                    cudaMemcpyDeviceToHost, stream_);
+    if (cudaMemcpyAsync(output.data(), output_device_, output_bytes_,
+                        cudaMemcpyDeviceToHost, stream_) != cudaSuccess)
+    {
+        throw std::runtime_error("D2H output copy failed!");
+    }
 
-    cudaStreamSynchronize(stream_);
+    if (cudaStreamSynchronize(stream_) != cudaSuccess)
+    {
+        throw std::runtime_error("Stream sync failed!");
+    }
 }

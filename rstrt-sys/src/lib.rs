@@ -103,8 +103,10 @@ unsafe extern "C" {
     /// # Safety
     ///
     /// `name` must be a valid NUL-terminated C string; `dims` must be valid
-    /// for reads of `ndims` `i64` values and `ndims` must be > 0. Allocating
-    /// a tensor twice is rejected by the C layer, not UB.
+    /// for reads of `ndims` `i64` values, `ndims` must be > 0 and is capped
+    /// at TensorRT's `Dims::MAX_DIMS` (8) — larger ranks are rejected by the
+    /// C layer, not UB. Allocating a tensor twice is likewise rejected, not
+    /// UB.
     pub fn trt_infer_alloc(
         handle: *mut TrtInfer,
         name: *const c_char,

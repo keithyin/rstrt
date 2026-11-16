@@ -47,10 +47,14 @@ crate_version() {
 }
 
 # Query crates.io directly (bypasses the local registry mirror that blocks
-# `cargo search`). Returns 0 if $1@version $2 is published, non-zero otherwise.
+# `cargo search`). Returns 0 if $1@$2 is published and not yanked, non-zero
+# otherwise: the version endpoint 404s for missing versions, and a yanked
+# version cannot satisfy a fresh dependency resolution, so it counts as
+# "not published" (the script then fails at `cargo publish` with crates.io's
+# duplicate-version error instead of silently skipping).
 is_published() {
-  curl -sf -A "rstrt-publish" "https://crates.io/api/v1/crates/$1" 2>/dev/null \
-    | grep -q "\"num\":\"$2\""
+  curl -sf -A "rstrt-publish" "https://crates.io/api/v1/crates/$1/$2" 2>/dev/null \
+    | grep -q '"yanked":false'
 }
 
 SYS_VERSION=$(crate_version rstrt-sys)

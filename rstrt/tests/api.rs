@@ -78,6 +78,60 @@ fn output_shape_mismatch_is_rejected_at_alloc() {
 }
 
 #[test]
+fn rank_over_max_dims_is_rejected() {
+    let Some(mut infer) = open() else {
+        eprintln!("skipping: sample engine not found (set RSTRT_PLAN to enable)");
+        return;
+    };
+    // A rank-16 shape with the engine's element count once reached
+    // `Dims::d[j]` out of bounds in the C layer (stack corruption).
+    let shape: Vec<i64> = std::iter::once(128 * 200 * 61)
+        .chain(std::iter::repeat(1).take(15))
+        .collect();
+    assert_eq!(shape.len(), 16);
+    let err = infer.allocate_memory_for("feature", &shape).unwrap_err();
+    assert!(err.to_string().contains("at most 8"), "got: {err}");
+}
+
+#[test]
+fn zero_extent_is_rejected() {
+    let Some(mut infer) = open() else {
+        eprintln!("skipping: sample engine not found (set RSTRT_PLAN to enable)");
+        return;
+    };
+    // cudaHostAlloc(0) would fail with an opaque CUDA error; the C layer
+    // rejects empty buffers up front instead.
+    let err = infer.allocate_memory_for("length", &[0]).unwrap_err();
+    assert!(err.to_string().contains("zero extent"), "got: {err}");
+}
+
+#[test]
+fn metadata_tracks_allocated_shape() {
+    let Some(mut infer) = open() else {
+        eprintln!("skipping: sample engine not found (set RSTRT_PLAN to enable)");
+        return;
+    };
+    // Equal-numel flattened shapes are allowed for static engines; the
+    // snapshot must follow so views size to the allocation.
+    infer.allocate_memory_for("probs", &[51_200]).unwrap();
+    let probs = infer
+        .tensors()
+        .iter()
+        .find(|m| m.name == "probs")
+        .expect("probs metadata");
+    assert_eq!(probs.shape, vec![51_200]);
+
+    infer
+        .allocate_memory_for("feature", &[128, 200, 61])
+        .unwrap();
+    infer.allocate_memory_for("length", &[128]).unwrap();
+    infer.infer().unwrap();
+
+    let p = infer.pinned_view::<f32>("probs").unwrap();
+    assert_eq!(p.len(), 51_200);
+}
+
+#[test]
 fn infer_reports_unallocated_tensors() {
     let Some(mut infer) = open() else {
         eprintln!("skipping: sample engine not found (set RSTRT_PLAN to enable)");

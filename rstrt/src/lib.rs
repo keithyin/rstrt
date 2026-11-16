@@ -2,10 +2,12 @@
 //!
 //! `TrtInfer` owns one TensorRT execution context, one CUDA stream, and a
 //! pinned/device buffer per I/O tensor. It is `Send` but not `Sync`: the C
-//! handle is not thread-safe, so never share it across threads — wrapping it
-//! in a `Mutex` does not make concurrent use sound. Create it on one thread,
-//! hand it off, and drive it from a single owner thread; with one object per
-//! thread you get multi-stream inference for free.
+//! handle is not thread-safe, so never share it across threads. Wrapping it
+//! in a `Mutex` would make shared use sound (the lock provides the exclusive
+//! access the C side requires) but serializes every call, defeating the
+//! point — instead, create it on one thread, hand it off, and drive it from
+//! a single owner thread; with one object per thread you get multi-stream
+//! inference for free.
 //!
 //! # Borrow semantics
 //!
@@ -109,6 +111,10 @@ pub struct IoMeta {
     pub name: String,
     pub mode: IoMode,
     pub dtype: DType,
+    /// The engine-declared shape until [`TrtInfer::allocate_memory_for`]
+    /// succeeds, after which it is the shape the buffer was allocated with —
+    /// the same shape [`TrtInfer::pinned_view`] / [`TrtInfer::pinned_view_mut`]
+    /// size their views to.
     pub shape: Vec<i64>,
 }
 
@@ -319,13 +325,16 @@ impl TrtInfer {
         })
     }
 
-    /// Metadata for all I/O tensors, in engine order.
+    /// Metadata for all I/O tensors, in engine order. Note that
+    /// [`allocate_memory_for`](Self::allocate_memory_for) updates the
+    /// snapshot's `shape` to the allocated shape.
     pub fn tensors(&self) -> &[IoMeta] {
         &self.metas
     }
 
     /// Metadata for the `i`-th I/O tensor (engine order), or `None` if out
-    /// of range.
+    /// of range. As with [`tensors`](Self::tensors), `shape` tracks the last
+    /// successful allocation.
     pub fn io(&self, i: usize) -> Option<&IoMeta> {
         self.metas.get(i)
     }
@@ -352,16 +361,26 @@ impl TrtInfer {
     /// allocations last for the object's lifetime, and allocating a tensor
     /// twice is an error.
     ///
-    /// `shape` must match the engine's declared shape for the tensor — the C
+    /// For an engine with static shapes, the element count must match the
+    /// declared shape (flattening to an equal element count is fine) — the C
     /// layer validates this and rejects mismatches, because the engine reads
-    /// and writes the buffers at its own static shape.
+    /// and writes the buffers at its own static shape. For a dynamic engine,
+    /// any concrete shape is accepted; every [`infer`](Self::infer) call then
+    /// re-checks each output buffer against the engine-resolved output shape,
+    /// so an under-sized output allocation fails loudly instead of letting
+    /// the engine write past the buffer.
+    ///
+    /// On success the metadata returned by [`tensors`](Self::tensors) /
+    /// [`io`](Self::io) reports `shape` as allocated here.
     pub fn allocate_memory_for(&mut self, name: &str, shape: &[i64]) -> Result<(), Error> {
         if shape.iter().any(|&d| d < 0) {
             return Err(Error::msg(format!(
-                "allocate_memory_for({name}): negative dim in shape {shape:?}"
+                "allocate_memory_for({name}): negative dim in shape {shape:?} — \
+                 dynamic engines need a concrete shape here"
             )));
         }
-        let cname = self.c_name(name)?;
+        let i = self.idx(name)?;
+        let cname = &self.cnames[i];
         // SAFETY: `cname` is a live NUL-terminated name; `shape.as_ptr()` is
         // valid for reads of `shape.len()` `i64` values for the call.
         let rc = unsafe {
@@ -375,17 +394,23 @@ impl TrtInfer {
         if rc != rstrt_sys::TRT_OK {
             return Err(err_from_rc(rc, &format!("allocate_memory_for({name})")));
         }
+        // The C layer now owns a buffer of exactly this shape: update the
+        // snapshot so `pinned_view` / `pinned_view_mut` size their views to
+        // what was actually allocated, even when overriding a dynamic shape.
+        self.metas[i].shape = shape.to_vec();
         Ok(())
     }
 
     /// Allocate pinned + device buffers for every I/O tensor using the
     /// engine's own shape. Equivalent to calling
     /// [`allocate_memory_for`](Self::allocate_memory_for) with each tensor's
-    /// declared shape; use [`allocate_memory_for`](Self::allocate_memory_for)
-    /// only when you need to override a (dynamic) shape.
+    /// declared shape. Fails on a dynamic engine (declared shapes contain
+    /// `-1` dims, which cannot be allocated as-is): use
+    /// [`allocate_memory_for`](Self::allocate_memory_for) with concrete
+    /// shapes instead.
     pub fn allocate_all(&mut self) -> Result<(), Error> {
-        // Snapshot name/shape pairs first: `allocate_memory_for` takes
-        // `&mut self`, which excludes borrowing `self.metas` mid-loop.
+        // Snapshot name/shape pairs first: `allocate_memory_for` mutates
+        // `self.metas`, which would race with borrowing them mid-loop.
         let shapes: Vec<(String, Vec<i64>)> = self
             .metas
             .iter()

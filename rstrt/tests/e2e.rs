@@ -1,5 +1,5 @@
-//! End-to-end validation: replicate the C++ reference input and check the
-//! `probs` output matches the recorded baseline from `cpp_code/ref_main.cpp`.
+//! End-to-end validation: replicate the C++ reference input (`cpp_code/main.cpp`)
+//! and check the `probs` output matches the recorded baseline.
 //!
 //! Skips (passes) when the sample engine is unavailable; see `common/mod.rs`.
 
